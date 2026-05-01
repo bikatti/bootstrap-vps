@@ -23,6 +23,7 @@ error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 # --- Variables configurables ---
 NEW_USER="${NEW_USER:-powerranger}"      # Usuario a crear (puedes cambiarlo)
 INSTALL_N8N="${INSTALL_N8N:-false}"      # Poner "true" para instalar n8n
+GITHUB_RAW="https://raw.githubusercontent.com/bikatti/bootstrap-vps/main"
 
 # ============================================================
 echo ""
@@ -150,11 +151,13 @@ setup_zsh() {
 
   info "Configurando Zsh + Oh My Zsh para $TARGET_USER..."
 
-  # Oh My Zsh (sin modo interactivo)
+  # Oh My Zsh (corregido: usar ZSH variable para evitar error de cd)
   if [ ! -d "$TARGET_HOME/.oh-my-zsh" ]; then
-    sudo -u "$TARGET_USER" sh -c \
-      "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-      "" --unattended
+    sudo -u "$TARGET_USER" env \
+      ZSH="$TARGET_HOME/.oh-my-zsh" \
+      HOME="$TARGET_HOME" \
+      sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
+      "" --unattended --keep-zshrc 2>/dev/null || true
   else
     warn "Oh My Zsh ya instalado para $TARGET_USER"
   fi
@@ -162,19 +165,30 @@ setup_zsh() {
   # Powerlevel10k
   P10K_DIR="$TARGET_HOME/.oh-my-zsh/custom/themes/powerlevel10k"
   if [ ! -d "$P10K_DIR" ]; then
-    sudo -u "$TARGET_USER" git clone --depth=1 \
+    info "Instalando Powerlevel10k para $TARGET_USER..."
+    git clone --depth=1 \
       https://github.com/romkatv/powerlevel10k.git \
       "$P10K_DIR"
+    chown -R "$TARGET_USER:$TARGET_USER" "$P10K_DIR"
+  else
+    warn "Powerlevel10k ya instalado para $TARGET_USER"
   fi
 
   # Plugins útiles
   ZSH_PLUGINS_DIR="$TARGET_HOME/.oh-my-zsh/custom/plugins"
-  sudo -u "$TARGET_USER" git clone --depth=1 \
-    https://github.com/zsh-users/zsh-autosuggestions \
-    "$ZSH_PLUGINS_DIR/zsh-autosuggestions" 2>/dev/null || true
-  sudo -u "$TARGET_USER" git clone --depth=1 \
-    https://github.com/zsh-users/zsh-syntax-highlighting \
-    "$ZSH_PLUGINS_DIR/zsh-syntax-highlighting" 2>/dev/null || true
+  mkdir -p "$ZSH_PLUGINS_DIR"
+
+  if [ ! -d "$ZSH_PLUGINS_DIR/zsh-autosuggestions" ]; then
+    git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+      "$ZSH_PLUGINS_DIR/zsh-autosuggestions"
+    chown -R "$TARGET_USER:$TARGET_USER" "$ZSH_PLUGINS_DIR/zsh-autosuggestions"
+  fi
+
+  if [ ! -d "$ZSH_PLUGINS_DIR/zsh-syntax-highlighting" ]; then
+    git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting \
+      "$ZSH_PLUGINS_DIR/zsh-syntax-highlighting"
+    chown -R "$TARGET_USER:$TARGET_USER" "$ZSH_PLUGINS_DIR/zsh-syntax-highlighting"
+  fi
 
   # .zshrc
   cat > "$TARGET_HOME/.zshrc" <<'ZSHRC'
@@ -209,6 +223,12 @@ SAVEHIST=10000
 ZSHRC
 
   chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.zshrc"
+
+  # Descargar .p10k.zsh desde GitHub
+  info "Descargando configuración p10k para $TARGET_USER..."
+  curl -fsSL "$GITHUB_RAW/.p10k.zsh" -o "$TARGET_HOME/.p10k.zsh"
+  chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.p10k.zsh"
+
   chsh -s /bin/zsh "$TARGET_USER"
   success "Zsh configurado para $TARGET_USER"
 }
@@ -271,7 +291,7 @@ echo "╰───────────────────────�
 echo ""
 echo "  Próximos pasos:"
 echo "  1. Establecer contraseña:  passwd $NEW_USER"
-echo "  2. Configurar Powerlevel10k al hacer login: p10k configure"
-echo "  3. Para instalar n8n:  INSTALL_N8N=true bash bootstrap.sh"
-echo "  4. Para dominio+SSL:   certbot --nginx -d tudominio.com"
+echo "  2. Entrar con el usuario:  su - $NEW_USER"
+echo "  3. Para instalar n8n:      INSTALL_N8N=true bash bootstrap.sh"
+echo "  4. Para dominio+SSL:       certbot --nginx -d tudominio.com"
 echo ""
