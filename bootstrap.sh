@@ -1,14 +1,12 @@
 #!/bin/bash
 # ============================================================
 #  bootstrap.sh — Configuración automática de VPS
-#  Basado en: vmi3076566 (powerranger)
-#  Uso: curl -fsSL <URL> | bash
-#       o: bash bootstrap.sh
+#  Repo: https://github.com/bikatti/bootstrap-vps
+#  Uso: curl -fsSL https://raw.githubusercontent.com/bikatti/bootstrap-vps/main/bootstrap.sh | bash
 # ============================================================
 
-set -e  # Para si algo falla
+set -e
 
-# --- Colores para los mensajes ---
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
@@ -20,84 +18,72 @@ success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# --- Variables configurables ---
-NEW_USER="${NEW_USER:-powerranger}"      # Usuario a crear (puedes cambiarlo)
-INSTALL_N8N="${INSTALL_N8N:-false}"      # Poner "true" para instalar n8n
+NEW_USER="${NEW_USER:-powerranger}"
 GITHUB_RAW="https://raw.githubusercontent.com/bikatti/bootstrap-vps/main"
 
-# ============================================================
 echo ""
 echo "╭──────────────────────────────────────────╮"
 echo "│        🚀 Bootstrap VPS — Inicio         │"
 echo "╰──────────────────────────────────────────╯"
 echo ""
 
-# ============================================================
+read -rp "  🌐 Dominio para n8n (ej: n8n.tudominio.com): " N8N_DOMAIN
+read -rp "  📧 Email para SSL (certbot): " SSL_EMAIL
+
+[ -z "$N8N_DOMAIN" ] && error "El dominio es obligatorio."
+[ -z "$SSL_EMAIL" ]  && error "El email es obligatorio."
+
+echo ""
+echo "  Dominio : $N8N_DOMAIN"
+echo "  Email   : $SSL_EMAIL"
+echo ""
+
 # 1. ACTUALIZAR SISTEMA
-# ============================================================
 info "Actualizando el sistema..."
 apt update -qq && apt upgrade -y -qq
 success "Sistema actualizado"
 
-# ============================================================
 # 2. PAQUETES ESENCIALES
-# ============================================================
 info "Instalando paquetes esenciales..."
 apt install -y -qq \
   curl wget git vim htop \
   tmux screen byobu \
   zsh \
   ufw fail2ban \
-  certbot \
-  rsync \
-  net-tools \
-  unzip zip \
-  jq \
-  build-essential \
-  software-properties-common \
-  ca-certificates \
-  gnupg \
-  lsb-release
+  certbot python3-certbot-nginx \
+  rsync net-tools unzip zip jq \
+  build-essential software-properties-common \
+  ca-certificates gnupg lsb-release
 success "Paquetes instalados"
 
-# ============================================================
 # 3. DOCKER
-# ============================================================
 if ! command -v docker &>/dev/null; then
   info "Instalando Docker..."
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     > /etc/apt/sources.list.d/docker.list
   apt update -qq
   apt install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  systemctl enable docker
-  systemctl start docker
+  systemctl enable docker && systemctl start docker
   success "Docker instalado"
 else
   warn "Docker ya está instalado, saltando..."
 fi
 
-# ============================================================
 # 4. NGINX
-# ============================================================
 if ! command -v nginx &>/dev/null; then
   info "Instalando Nginx..."
   apt install -y -qq nginx
-  systemctl enable nginx
-  systemctl start nginx
+  systemctl enable nginx && systemctl start nginx
   success "Nginx instalado"
 else
   warn "Nginx ya está instalado, saltando..."
 fi
 
-# ============================================================
-# 5. FIREWALL (UFW)
-# ============================================================
+# 5. FIREWALL
 info "Configurando firewall UFW..."
 ufw --force reset
 ufw default deny incoming
@@ -106,11 +92,9 @@ ufw allow ssh
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
-success "Firewall configurado (SSH, 80, 443 abiertos)"
+success "Firewall configurado"
 
-# ============================================================
 # 6. FAIL2BAN
-# ============================================================
 info "Configurando fail2ban..."
 cat > /etc/fail2ban/jail.local <<'EOF'
 [DEFAULT]
@@ -121,60 +105,44 @@ maxretry = 5
 [sshd]
 enabled = true
 EOF
-systemctl enable fail2ban
-systemctl restart fail2ban
+systemctl enable fail2ban && systemctl restart fail2ban
 success "Fail2ban configurado"
 
-# ============================================================
-# 7. CREAR USUARIO (si no existe)
-# ============================================================
+# 7. USUARIO
 if ! id "$NEW_USER" &>/dev/null; then
   info "Creando usuario $NEW_USER..."
   useradd -m -s /bin/zsh "$NEW_USER"
   usermod -aG sudo "$NEW_USER"
   usermod -aG docker "$NEW_USER"
-  echo "⚠️  Recuerda establecer la contraseña con: passwd $NEW_USER"
   success "Usuario $NEW_USER creado"
 else
-  warn "Usuario $NEW_USER ya existe, añadiéndolo a grupos docker/sudo..."
+  warn "Usuario $NEW_USER ya existe, actualizando grupos..."
   usermod -aG sudo "$NEW_USER"
   usermod -aG docker "$NEW_USER"
 fi
 
-# ============================================================
 # 8. ZSH + OH MY ZSH + POWERLEVEL10K
-# ============================================================
 setup_zsh() {
   local TARGET_USER="$1"
   local TARGET_HOME
   TARGET_HOME=$(eval echo "~$TARGET_USER")
 
-  info "Configurando Zsh + Oh My Zsh para $TARGET_USER..."
+  info "Configurando Zsh para $TARGET_USER..."
 
-  # Oh My Zsh (corregido: usar ZSH variable para evitar error de cd)
   if [ ! -d "$TARGET_HOME/.oh-my-zsh" ]; then
-    sudo -u "$TARGET_USER" env \
-      ZSH="$TARGET_HOME/.oh-my-zsh" \
-      HOME="$TARGET_HOME" \
+    env ZSH="$TARGET_HOME/.oh-my-zsh" HOME="$TARGET_HOME" \
       sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
       "" --unattended --keep-zshrc 2>/dev/null || true
   else
     warn "Oh My Zsh ya instalado para $TARGET_USER"
   fi
 
-  # Powerlevel10k
   P10K_DIR="$TARGET_HOME/.oh-my-zsh/custom/themes/powerlevel10k"
   if [ ! -d "$P10K_DIR" ]; then
-    info "Instalando Powerlevel10k para $TARGET_USER..."
-    git clone --depth=1 \
-      https://github.com/romkatv/powerlevel10k.git \
-      "$P10K_DIR"
+    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$P10K_DIR"
     chown -R "$TARGET_USER:$TARGET_USER" "$P10K_DIR"
-  else
-    warn "Powerlevel10k ya instalado para $TARGET_USER"
   fi
 
-  # Plugins útiles
   ZSH_PLUGINS_DIR="$TARGET_HOME/.oh-my-zsh/custom/plugins"
   mkdir -p "$ZSH_PLUGINS_DIR"
 
@@ -190,7 +158,6 @@ setup_zsh() {
     chown -R "$TARGET_USER:$TARGET_USER" "$ZSH_PLUGINS_DIR/zsh-syntax-highlighting"
   fi
 
-  # .zshrc
   cat > "$TARGET_HOME/.zshrc" <<'ZSHRC'
 export ZSH="$HOME/.oh-my-zsh"
 ZSH_THEME="powerlevel10k/powerlevel10k"
@@ -207,7 +174,6 @@ plugins=(
 
 source $ZSH/oh-my-zsh.sh
 
-# Aliases útiles
 alias ll='ls -lah'
 alias gs='git status'
 alias dc='docker compose'
@@ -215,7 +181,6 @@ alias dps='docker ps'
 alias dpsa='docker ps -a'
 alias nginx-reload='sudo systemctl reload nginx'
 
-# Historial grande
 HISTSIZE=10000
 SAVEHIST=10000
 
@@ -223,12 +188,8 @@ SAVEHIST=10000
 ZSHRC
 
   chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.zshrc"
-
-  # Descargar .p10k.zsh desde GitHub
-  info "Descargando configuración p10k para $TARGET_USER..."
   curl -fsSL "$GITHUB_RAW/.p10k.zsh" -o "$TARGET_HOME/.p10k.zsh"
   chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.p10k.zsh"
-
   chsh -s /bin/zsh "$TARGET_USER"
   success "Zsh configurado para $TARGET_USER"
 }
@@ -236,27 +197,16 @@ ZSHRC
 setup_zsh root
 setup_zsh "$NEW_USER"
 
-# ============================================================
-# 9. TMUX CONFIG
-# ============================================================
+# 9. TMUX
 info "Configurando tmux..."
 cat > /root/.tmux.conf <<'TMUXCONF'
-# Prefijo más cómodo
 set -g prefix C-a
 unbind C-b
 bind C-a send-prefix
-
-# Mouse activado
 set -g mouse on
-
-# Paneles con | y -
 bind | split-window -h
 bind - split-window -v
-
-# Colores
 set -g default-terminal "screen-256color"
-
-# Barra de estado
 set -g status-bg colour235
 set -g status-fg colour136
 set -g status-left '#[fg=colour166]#H '
@@ -266,32 +216,55 @@ cp /root/.tmux.conf "/home/$NEW_USER/.tmux.conf"
 chown "$NEW_USER:$NEW_USER" "/home/$NEW_USER/.tmux.conf"
 success "Tmux configurado"
 
-# ============================================================
-# 10. N8N (opcional)
-# ============================================================
-if [ "$INSTALL_N8N" = "true" ]; then
-  info "Instalando n8n con Docker..."
-  docker pull n8nio/n8n
-  docker run -d \
-    --name n8n \
-    --restart unless-stopped \
-    -p 127.0.0.1:5678:5678 \
-    -v n8n_data:/home/node/.n8n \
-    n8nio/n8n
-  success "n8n corriendo en puerto 5678"
+# 10. NGINX PARA N8N
+info "Configurando Nginx para $N8N_DOMAIN..."
+cat > /etc/nginx/sites-available/n8n <<NGINXCONF
+server {
+    listen 80;
+    server_name $N8N_DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:5678;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+NGINXCONF
+ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
+nginx -t && systemctl reload nginx
+success "Nginx configurado"
+
+# 11. SSL
+info "Generando SSL para $N8N_DOMAIN..."
+certbot --nginx -d "$N8N_DOMAIN" --non-interactive --agree-tos -m "$SSL_EMAIL"
+success "SSL configurado"
+
+# 12. N8N
+info "Instalando n8n..."
+if docker ps -a --format '{{.Names}}' | grep -q "^n8n$"; then
+  warn "Contenedor n8n ya existe, recreando..."
+  docker stop n8n && docker rm n8n
 fi
 
-# ============================================================
-# FIN
-# ============================================================
+docker run -d \
+  --name n8n \
+  --restart unless-stopped \
+  -p 127.0.0.1:5678:5678 \
+  -e N8N_HOST="$N8N_DOMAIN" \
+  -e N8N_PROTOCOL=https \
+  -e WEBHOOK_URL="https://$N8N_DOMAIN/" \
+  -v n8n_data:/home/node/.n8n \
+  n8nio/n8n
+success "n8n instalado"
+
 echo ""
 echo "╭──────────────────────────────────────────╮"
 echo "│     ✅  Bootstrap completado             │"
 echo "╰──────────────────────────────────────────╯"
 echo ""
-echo "  Próximos pasos:"
-echo "  1. Establecer contraseña:  passwd $NEW_USER"
-echo "  2. Entrar con el usuario:  su - $NEW_USER"
-echo "  3. Para instalar n8n:      INSTALL_N8N=true bash bootstrap.sh"
-echo "  4. Para dominio+SSL:       certbot --nginx -d tudominio.com"
+echo "  🌐 n8n en: https://$N8N_DOMAIN"
+echo "  🔑 Contraseña: passwd $NEW_USER"
 echo ""
